@@ -1,0 +1,26 @@
+Privacy Policy — Copy-Paste Unlock
+
+Last updated: August 27, 2026
+
+Copy-Paste Unlock does not collect, store, transmit, or share any personal data, browsing history, or page content.
+
+What the extension does locally on your device:
+- Stores a single on/off setting (whether you've enabled the extension) using Chrome's local storage (chrome.storage.local). This setting never leaves your browser and is not transmitted anywhere.
+- When enabled, it modifies how the current webpage handles copy, cut, paste, right-click, and text-selection events, entirely within your browser.
+
+What the extension does not do:
+- It does not collect analytics or usage statistics.
+- It does not read, log, or transmit anything you copy, cut, or paste.
+- It does not communicate with any external server.
+- It does not use cookies or any third-party tracking.
+
+Permissions:
+- storage: remembers your on/off preference locally.
+- scripting / host permissions: allows the extension to apply its copy/paste-unlocking behavior on the page you're viewing, only when you've turned it on.
+- activeTab / tabs: reloads your current tab when you toggle the extension so the change takes effect immediately.
+
+Changes to this policy:
+If this policy changes, the "Last updated" date above will be revised.
+
+Contact:
+[your email or GitHub profile URL here]
