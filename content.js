@@ -74,9 +74,13 @@
   }
 
   function isClipboardShortcut(e) {
-    if (!e.ctrlKey && !e.metaKey && !(e.shiftKey && e.key === "Insert")) return false;
     const k = typeof e.key === "string" ? e.key.toLowerCase() : "";
-    return k === "c" || k === "v" || k === "x" || k === "a" || k === "insert";
+    if (e.shiftKey && k === "insert") return true;
+    if (!e.ctrlKey && !e.metaKey) return false;
+    if (k === "c" || k === "v" || k === "x" || k === "insert") return true;
+    // Select-all is left alone inside editors: rich text editors implement it
+    // themselves and call preventDefault() for good reasons.
+    return k === "a" && !isEditable(e.target);
   }
 
   // A "pure blocker" is a handler whose whole body is preventDefault /
@@ -124,16 +128,26 @@
   // Should this dispatch be intercepted at all? Anything that returns false
   // runs completely untouched, exactly as the page wrote it.
   function shouldGuard(type, event, listener) {
+    // copy/cut/paste/dragstart are guarded wherever they are registered: the
+    // "did it read the payload?" test below tells a blocker from a handler on
+    // its own, and it has to, because the classic
+    //     $("#field").on("paste", function (e) { e.preventDefault(); })
+    // blocker sits on the input element, not on document.
+    if (DATA_PROP[type]) return true;
+
     if (looksLikeBlocker(listener)) return true;
+
+    if (type === "keydown") {
+      // Only Ctrl/Cmd + C/V/X (and Shift+Insert), anywhere on the page --
+      // inputs that block Ctrl+V do it with a listener on the input itself.
+      // Everything else is left alone, so Enter-to-send, Escape, arrow keys
+      // and IME keep working.
+      return isClipboardShortcut(event);
+    }
 
     const global = isGlobalTarget(event.currentTarget);
     if (!global) return false; // element-level handlers are real app code
 
-    if (type === "keydown") {
-      // Only Ctrl/Cmd + C/V/X/A, and never inside an editor -- otherwise we
-      // would break Enter-to-send, Escape, arrow keys, IME, shortcuts, ...
-      return !isEditable(event.target) && isClipboardShortcut(event);
-    }
     if (type === "mousedown") {
       return !isEditable(event.target);
     }
@@ -354,20 +368,57 @@
   // --- 3. Strip inline on* attributes coming from the HTML ----------------
   // (content attributes bypass the IDL setters patched above)
 
-  const HANDLER_ATTRS = [
+  // Attributes that exist for one reason only -- always removed.
+  const ALWAYS_STRIP = [
     "oncopy",
     "oncut",
     "onpaste",
     "oncontextmenu",
     "onselectstart",
     "ondragstart",
+    "onbeforecopy",
+    "onbeforecut",
+    "onbeforepaste",
   ];
-  const ATTR_SELECTOR = HANDLER_ATTRS.map((a) => "[" + a + "]").join(",");
+  // Attributes that usually do real work, removed only when the inline source
+  // is a blocker, e.g. onkeydown="if(event.ctrlKey&&event.keyCode==86)return false".
+  const MAYBE_STRIP = ["onkeydown", "onkeypress", "onkeyup", "onmousedown", "ondrop"];
+  const WATCHED_ATTRS = ALWAYS_STRIP.concat(MAYBE_STRIP);
+  const ATTR_SELECTOR = WATCHED_ATTRS.map((a) => "[" + a + "]").join(",");
+
+  const CLIPBOARD_HINT = /ctrlKey|metaKey|shiftKey|clipboard|\b(?:keyCode|which|charCode)\b|\bkey\b/i;
+
+  function inlineSourceIsBlocker(src) {
+    if (typeof src !== "string" || src.length > 400) return false;
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "")
+      .replace(
+        /[\w$.]*\b(?:preventDefault|stopPropagation|stopImmediatePropagation)\s*\(\s*\)\s*;?/g,
+        ""
+      )
+      .replace(/[\w$.]*\breturnValue\s*=\s*(?:false|!1)\s*;?/g, "")
+      .replace(/\breturn\s+(?:false|!1)\s*;?/g, "")
+      .replace(/\breturn\s*;?/g, "")
+      .replace(/[{}();,\s]/g, "");
+    if (stripped.length === 0) return true;
+    // A conditional blocker: nothing but a test on the event and "return false".
+    return (
+      /return\s+(?:false|!1)|preventDefault/.test(src) &&
+      CLIPBOARD_HINT.test(src) &&
+      !/\b(?:function|=>|ajax|fetch|submit|open|location|href)\b/i.test(src)
+    );
+  }
 
   function stripOn(el) {
     if (!el || !el.hasAttribute) return;
-    for (const a of HANDLER_ATTRS) {
+    for (const a of ALWAYS_STRIP) {
       if (el.hasAttribute(a)) el.removeAttribute(a);
+    }
+    for (const a of MAYBE_STRIP) {
+      if (el.hasAttribute(a) && inlineSourceIsBlocker(el.getAttribute(a))) {
+        el.removeAttribute(a);
+      }
     }
   }
 
@@ -375,7 +426,7 @@
     if (!root || root.nodeType !== 1) return;
     stripOn(root);
     if (root.querySelectorAll) {
-      // Query only the six attributes instead of every element in the
+      // Query only the watched attributes instead of every element in the
       // subtree -- the old "*" walk froze DOM-heavy apps.
       const matches = root.querySelectorAll(ATTR_SELECTOR);
       for (let i = 0; i < matches.length; i++) stripOn(matches[i]);
@@ -383,6 +434,7 @@
   }
 
   let pending = [];
+  let pendingFullSweep = false;
   let scheduled = false;
   const defer =
     typeof window.requestIdleCallback === "function"
@@ -397,6 +449,11 @@
     scheduled = false;
     const queue = pending;
     pending = [];
+    if (pendingFullSweep) {
+      pendingFullSweep = false;
+      sweep();
+      return;
+    }
     for (const node of queue) {
       try {
         stripTree(node);
@@ -406,13 +463,23 @@
     }
   }
 
-  function schedule(node) {
-    if (pending.length > 500) return; // a full sweep will catch the rest
-    pending.push(node);
+  function scheduleFlush() {
     if (!scheduled) {
       scheduled = true;
       defer(flush);
     }
+  }
+
+  function schedule(node) {
+    if (pending.length > 500) {
+      // Too many individual subtrees queued; do one sweep of the document
+      // instead of walking each of them.
+      pendingFullSweep = true;
+      pending.length = 0;
+    } else if (!pendingFullSweep) {
+      pending.push(node);
+    }
+    scheduleFlush();
   }
 
   function sweep() {
@@ -440,7 +507,7 @@
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: HANDLER_ATTRS,
+    attributeFilter: WATCHED_ATTRS,
   });
 
   // --- 4. Force CSS that blocks selection back on -------------------------

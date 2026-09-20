@@ -8,15 +8,23 @@
 
 const SCRIPT_ID = "copy-paste-unlock-main";
 
-const SCRIPT = {
-  id: SCRIPT_ID,
-  matches: ["http://*/*", "https://*/*"],
-  js: ["content.js"],
-  runAt: "document_start",
-  allFrames: true,
-  world: "MAIN",
-  persistAcrossSessions: true,
-};
+function scriptConfig(withOriginFallback) {
+  const config = {
+    id: SCRIPT_ID,
+    matches: ["http://*/*", "https://*/*"],
+    js: ["content.js"],
+    runAt: "document_start",
+    allFrames: true,
+    world: "MAIN",
+    persistAcrossSessions: true,
+  };
+  // Covers about:blank / srcdoc iframes, which some sites render forms into.
+  // Not supported on older Chrome, hence the retry without it.
+  if (withOriginFallback) config.matchOriginAsFallback = true;
+  return config;
+}
+
+let lastError = null;
 
 async function isRegistered() {
   try {
@@ -27,19 +35,37 @@ async function isRegistered() {
   }
 }
 
+async function apply(fn) {
+  try {
+    await fn(scriptConfig(true));
+    return true;
+  } catch (e) {
+    try {
+      await fn(scriptConfig(false));
+      return true;
+    } catch (e2) {
+      lastError = e2 && e2.message ? e2.message : String(e2);
+      console.error("Copy-Paste Unlock: could not update registration", e2);
+      return false;
+    }
+  }
+}
+
 async function sync(enabled) {
   const registered = await isRegistered();
-  try {
-    if (enabled && !registered) {
-      await chrome.scripting.registerContentScripts([SCRIPT]);
-    } else if (enabled && registered) {
-      await chrome.scripting.updateContentScripts([SCRIPT]);
-    } else if (!enabled && registered) {
+  if (enabled && !registered) {
+    await apply((c) => chrome.scripting.registerContentScripts([c]));
+  } else if (enabled && registered) {
+    await apply((c) => chrome.scripting.updateContentScripts([c]));
+  } else if (!enabled && registered) {
+    try {
       await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
+    } catch (e) {
+      lastError = e && e.message ? e.message : String(e);
+      console.error("Copy-Paste Unlock: could not unregister", e);
     }
-  } catch (e) {
-    console.error("Copy-Paste Unlock: could not update registration", e);
   }
+  if (enabled && (await isRegistered())) lastError = null;
 }
 
 async function syncFromStorage() {
@@ -49,14 +75,28 @@ async function syncFromStorage() {
 
 chrome.runtime.onInstalled.addListener(syncFromStorage);
 chrome.runtime.onStartup.addListener(syncFromStorage);
+// Also reconcile whenever the service worker starts, in case an event that
+// should have registered the script was missed.
+syncFromStorage();
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || msg.type !== "setEnabled") return;
-  const enabled = !!msg.enabled;
-  (async () => {
-    await chrome.storage.local.set({ enabled });
-    await sync(enabled);
-    sendResponse({ enabled });
-  })();
-  return true; // keep the channel open for the async response
+  if (!msg) return;
+
+  if (msg.type === "setEnabled") {
+    const enabled = !!msg.enabled;
+    (async () => {
+      await chrome.storage.local.set({ enabled });
+      await sync(enabled);
+      sendResponse({ enabled, registered: await isRegistered(), error: lastError });
+    })();
+    return true; // keep the channel open for the async response
+  }
+
+  if (msg.type === "getStatus") {
+    (async () => {
+      const { enabled } = await chrome.storage.local.get({ enabled: false });
+      sendResponse({ enabled, registered: await isRegistered(), error: lastError });
+    })();
+    return true;
+  }
 });

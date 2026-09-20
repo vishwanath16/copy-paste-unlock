@@ -12,17 +12,28 @@ number-entry fields, "protected" articles, etc.).
     `selectstart` / `dragstart` / `mousedown` / `keydown` listeners and takes
     away only their ability to call `preventDefault()` — and only when the
     listener looks like a blocker rather than a real handler.
-  - Neutralizes inline handlers like `onpaste="return false"`.
+  - Removes inline handlers like `onpaste="return false"`, and removes
+    `onkeydown` / `onmousedown` / `ondrop` attributes too when their inline
+    source is just a blocker (e.g.
+    `onkeydown="if(event.ctrlKey&&event.keyCode==86)return false"`).
   - Forces `user-select: text` via injected CSS so text stays selectable
     (elements marked `draggable="true"` are left alone so drag & drop works).
-- A listener is treated as a blocker when its entire body is
-  `preventDefault` / `stopPropagation` / `return false`, or when it is
-  registered on `window` / `document` / `<html>` / `<body>` and blocks the
-  event without ever reading the `clipboardData` (or `dataTransfer`) it was
-  handed. Anything that actually reads the payload — the way WhatsApp Web,
-  ChatGPT or Claude read a pasted image — is left completely alone.
-  `keydown` is only touched for Ctrl/Cmd + C/V/X/A outside of editable
-  fields, so app shortcuts like Enter-to-send keep working.
+- For `copy` / `cut` / `paste` / `dragstart`, wherever the listener sits, the
+  test is: **did it read the payload?** A listener that blocks the event
+  without ever touching `clipboardData` / `dataTransfer` is a blocker and is
+  overruled. Anything that actually reads the payload — the way WhatsApp Web,
+  ChatGPT or Claude read a pasted image — is left completely alone. This is
+  what catches the common
+  `$("#field").on("paste", function (e) { e.preventDefault(); })` on
+  government/banking forms, which sits on the input element rather than on
+  `document`.
+- `keydown` is only touched for Ctrl/Cmd + C/V/X and Shift+Insert (plus
+  Ctrl/Cmd+A outside editable fields), so app shortcuts like Enter-to-send,
+  Escape and arrow keys keep working.
+- `contextmenu` / `selectstart` / `mousedown` are only overruled when the
+  listener is a pure blocker or is registered on
+  `window` / `document` / `<html>` / `<body>`, so custom right-click menus in
+  real apps survive.
 - The patch script is registered as a `MAIN` world content script by the
   background service worker while the toggle is on, so it runs at
   `document_start` before the page's own scripts, and is not affected by the
@@ -48,6 +59,9 @@ number-entry fields, "protected" articles, etc.).
 - Sites that overwrite your clipboard on copy (`clipboardData.setData` with
   a "read more at ..." string) are deliberately left alone: that is
   indistinguishable from the rich-text copy real apps do.
+- The popup reports the truth rather than the stored flag: it asks the page
+  whether the patch script actually ran, so "Enabled — reload this page" and
+  "Could not start: ..." are real diagnostics.
 - This only affects your own browser's handling of the page; it doesn't
   bypass server-side validation, so if a field also rejects pasted values on
   submit, that's a separate check.

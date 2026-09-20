@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Copy-Paste Unlock",
-  "version": "1.1",
+  "version": "1.2",
   "description": "Re-enables copy, cut, paste, right-click, and text selection on pages that block them.",
   "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],
