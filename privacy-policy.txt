@@ -17,7 +17,7 @@ What the extension does not do:
 Permissions:
 - storage: remembers your on/off preference locally.
 - scripting / host permissions: allows the extension to apply its copy/paste-unlocking behavior on the page you're viewing, only when you've turned it on.
-- activeTab / tabs: reloads your current tab when you toggle the extension so the change takes effect immediately.
+- tabs: reloads your current tab when you toggle the extension so the change takes effect immediately.
 
 Changes to this policy:
 If this policy changes, the "Last updated" date above will be revised.
