@@ -14,7 +14,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   toggle.addEventListener("change", () => {
     const enabled = toggle.checked;
-    chrome.storage.local.set({ enabled }, () => {
+    toggle.disabled = true;
+    // The background worker owns the stored flag and the script registration.
+    // Reload only after it confirms, otherwise the tab can reload before the
+    // registration change has taken effect.
+    chrome.runtime.sendMessage({ type: "setEnabled", enabled }, () => {
+      toggle.disabled = false;
       render(enabled);
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs && tabs[0] && tabs[0].id !== undefined) {
